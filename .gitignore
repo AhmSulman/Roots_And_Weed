@@ -1,0 +1,14 @@
+.buildozer/
+bin/
+*.apk
+*.aab
+okf_output/
+dist/
+build/
+*.spec.bak
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/

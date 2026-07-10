@@ -1,0 +1,15 @@
+# Desktop (Windows/Linux/macOS) requirements.
+# Android requirements are declared separately in buildozer.spec -- torch/demucs
+# are intentionally NOT there; see okf/ALGORITHM_NOTES.md for why.
+
+kivy>=2.3.0
+kivymd>=1.2.0
+numpy>=1.24
+
+# Real 4-stem separation (desktop only). Demucs needs ffmpeg on PATH for
+# non-WAV input; WAV works without it.
+torch>=2.1
+demucs>=4.0.1
+
+# Packaging desktop builds (Windows .exe)
+pyinstaller>=6.3
