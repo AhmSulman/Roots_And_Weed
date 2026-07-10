@@ -1,4 +1,4 @@
-# OKF — Octave Key Finder
+# Roots and Weed
 
 Cross-platform (Android + Windows) song **key finder**, **BPM finder**, and
 **stem separator**, built with Kivy + KivyMD. Ported and rewritten from the
@@ -26,7 +26,7 @@ generalized into a standalone mobile/desktop app.
 
 ```
 main.py                  # Kivy/KivyMD app entrypoint + UI logic
-okf.kv                   # Material Design layout
+rootsandweed.kv          # Material Design layout
 okf/
   audio_analysis.py       # BPM + key detection (pure NumPy, no librosa)
   separation.py            # Demucs (desktop) + DSP fallback (Android-safe)

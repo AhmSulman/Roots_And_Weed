@@ -27,14 +27,14 @@ jobs:
 
       - name: Build with PyInstaller
         run: |
-          pyinstaller --noconfirm --onedir --windowed --name OKF `
-            --add-data "okf.kv;." `
+          pyinstaller --noconfirm --onedir --windowed --name RootsAndWeed `
+            --add-data "rootsandweed.kv;." `
             --add-data "okf;okf" `
             main.py
 
       - name: Upload Windows build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: okf-windows
-          path: dist/OKF
+          name: rootsandweed-windows
+          path: dist/RootsAndWeed
           retention-days: 30

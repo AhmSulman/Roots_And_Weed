@@ -20,14 +20,17 @@ two real accuracy issues in the original:
    between the best and second-best key) so a caller can tell a confident
    "F# Minor" from a coin-flip between two relative keys.
 
-Only WAV input is supported natively (via the stdlib `wave` module) so
-there are zero third-party decoding dependencies. Desktop callers that
-need MP3/FLAC/etc. can pre-convert with ffmpeg/pydub before calling in.
+WAV input is decoded natively (via the stdlib `wave` module) with zero
+third-party decoding dependencies. Other formats (MP3, ...) go through
+`load_audio`, which dispatches to a per-platform in-memory decoder
+(okf.decode_desktop / okf.decode_android) with the same (y, sr) contract.
 """
 
 import wave
+import time
 
 import numpy as np
+
 
 PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
@@ -72,6 +75,19 @@ def load_wav(path, target_sr=22050, mono=True):
         sr = target_sr
 
     return y.astype(np.float32), sr
+
+
+def load_audio(path, target_sr=22050, mono=True):
+    """Platform-correct decode -> common (y, sr) PCM stream, any supported format."""
+    try:
+        from kivy.utils import platform  # imported lazily: this module must load without kivy
+    except ImportError:
+        platform = "desktop"
+    if platform == "android":
+        from okf.decode_android import decode
+    else:
+        from okf.decode_desktop import decode
+    return decode(path, target_sr=target_sr, mono=mono)
 
 
 def _resample(y, sr_from, sr_to):
@@ -175,14 +191,22 @@ def _chroma_from_magnitude(S_mag, sr, n_fft):
     return chroma
 
 
-def detect_key(chroma_vector):
+def detect_key(chroma_vector, chroma_frames=None):
     """
     Krumhansl-Schmuckler key detection via Pearson correlation.
 
     Returns (key_name, is_minor, best_score, confidence, alternate_key).
     `confidence` is the correlation gap between the best and second-best
     key -- a low value means the piece sits ambiguously between two keys
-    (usually relative major/minor, which share 6 of 7 scale tones).
+    (usually relative major/minor, which share all seven scale tones).
+
+    Relative-pair disambiguation, two checks, cheapest first:
+    1. Tonic energy (instant): whichever of the two tonics carries more
+       total chroma energy is where the piece resolves.
+    2. Endpoints (needs the full chromagram, so slightly slower): music
+       tends to open and close on the tonic chord, so the first/last
+       stretch of the track gets an extra vote. Only runs when
+       `chroma_frames` is provided and the pair is near-tied.
     """
     x = chroma_vector - chroma_vector.mean()
     x_norm = np.linalg.norm(x) + 1e-8
@@ -197,8 +221,29 @@ def detect_key(chroma_vector):
 
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
     best_key, best_score = ranked[0]
-    alternate_key, alt_score = ranked[1]
-    confidence = float(best_score - alt_score)
+
+    rel = relative_key(best_key)
+    if abs(best_score - scores[rel]) < 0.05:
+        best_pc = PITCH_CLASSES.index(best_key.split(" ")[0])
+        rel_pc = PITCH_CLASSES.index(rel.split(" ")[0])
+
+        support_best = float(chroma_vector[best_pc])
+        support_rel = float(chroma_vector[rel_pc])
+
+        if chroma_frames is not None and chroma_frames.shape[1] >= 20:
+            edge = max(5, chroma_frames.shape[1] // 10)
+            ends = np.concatenate(
+                [chroma_frames[:, :edge], chroma_frames[:, -edge:]], axis=1
+            ).mean(axis=1)
+            ends = ends / (np.linalg.norm(ends) + 1e-8)
+            support_best += float(ends[best_pc])
+            support_rel += float(ends[rel_pc])
+
+        if support_rel > support_best:
+            best_key, best_score = rel, scores[rel]
+
+    alternate_key, alt_score = next((k, s) for k, s in ranked if k != best_key)
+    confidence = float(abs(best_score - alt_score))
     is_minor = "Minor" in best_key
     return best_key, is_minor, best_score, confidence, alternate_key
 
@@ -206,6 +251,15 @@ def detect_key(chroma_vector):
 def to_flat_notation(key_name):
     root, mode = key_name.split(" ", 1)
     return f"{FLAT_EQUIVALENTS.get(root, root)} {mode}"
+
+
+def relative_key(key_name):
+    """C Major -> A Minor; A Minor -> C Major. Same seven notes, other tonic."""
+    root, mode = key_name.split(" ", 1)
+    i = PITCH_CLASSES.index(root)
+    if mode == "Major":
+        return f"{PITCH_CLASSES[(i + 9) % 12]} Minor"
+    return f"{PITCH_CLASSES[(i + 3) % 12]} Major"
 
 
 class AudioAnalyzer:
@@ -217,7 +271,8 @@ class AudioAnalyzer:
     @classmethod
     def analyze_file(cls, filepath, target_sr=22050):
         try:
-            y, sr = load_wav(filepath, target_sr=target_sr, mono=True)
+            t0 = time.perf_counter()
+            y, sr = load_audio(filepath, target_sr=target_sr, mono=True)
             if len(y) == 0:
                 raise ValueError("Empty audio signal")
 
@@ -231,7 +286,7 @@ class AudioAnalyzer:
             chroma_norm = chroma_avg / (np.linalg.norm(chroma_avg) + 1e-8)
 
             key_name, is_minor, key_score, key_confidence, alternate_key = detect_key(
-                chroma_norm
+                chroma_norm, chroma_frames=chroma
             )
 
             step = max(1, len(y) // 1000)
@@ -249,10 +304,12 @@ class AudioAnalyzer:
                 "key": to_flat_notation(key_name),
                 "is_minor": is_minor,
                 "key_confidence": round(key_confidence, 3),
+                "relative_key": to_flat_notation(relative_key(key_name)),
                 "alternate_key": to_flat_notation(alternate_key),
                 "duration": duration,
                 "sample_rate": int(sr),
                 "waveform_data": waveform_data[:1000],
+                "analysis_seconds": round(time.perf_counter() - t0, 3),
             }
         except Exception as e:
             raise Exception(f"Analysis failed: {str(e)}") from e

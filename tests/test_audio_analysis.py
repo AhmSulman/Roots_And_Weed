@@ -13,6 +13,7 @@ from okf.audio_analysis import (
     _stft_magnitude,
     detect_key,
     load_wav,
+    relative_key,
     to_flat_notation,
 )
 
@@ -134,6 +135,41 @@ def test_detect_key_best_score_beats_alternate():
     assert confidence >= 0  # best is never worse than the runner-up
 
 
+def test_relative_key_maps_both_directions():
+    assert relative_key("C Major") == "A Minor"
+    assert relative_key("A Minor") == "C Major"
+    assert relative_key("F# Minor") == "A Major"
+    for i, pitch in enumerate(PITCH_CLASSES):
+        for mode in ("Major", "Minor"):
+            name = f"{pitch} {mode}"
+            assert relative_key(relative_key(name)) == name  # involution
+
+
+def test_detect_key_tie_break_prefers_stronger_tonic():
+    # Chroma sitting exactly between C Major and A Minor, but with the
+    # energy tilted toward A: the tonic tie-break must pick A Minor.
+    chroma = (np.roll(MAJOR_PROFILE, 0) + np.roll(MINOR_PROFILE, 9)) / 2.0
+    chroma[9] += 1.5  # extra weight on A
+    chroma[0] -= 0.5  # less weight on C
+    key_name, is_minor, _, _, _ = detect_key(chroma / np.linalg.norm(chroma))
+    assert key_name == "A Minor"
+    assert is_minor is True
+
+
+def test_detect_key_endpoint_check_votes_for_tonic_at_track_edges():
+    # Globally ambiguous between C Major / A Minor, but the track opens
+    # and closes with strong A: the endpoint check should tip it to A Minor.
+    ambiguous = (np.roll(MAJOR_PROFILE, 0) + np.roll(MINOR_PROFILE, 9)) / 2.0
+    frames = np.tile(ambiguous[:, None], (1, 100))
+    frames[9, :10] += 4.0   # strong A at the start
+    frames[9, -10:] += 4.0  # strong A at the end
+    chroma_avg = frames.mean(axis=1)
+    key_name, is_minor, _, _, _ = detect_key(
+        chroma_avg / np.linalg.norm(chroma_avg), chroma_frames=frames
+    )
+    assert key_name == "A Minor"
+
+
 # -- flat notation --------------------------------------------------------
 
 @pytest.mark.parametrize(
@@ -156,7 +192,8 @@ def test_analyze_file_returns_expected_keys(wav_factory):
     result = AudioAnalyzer.analyze_file(path)
     for key in (
         "bpm", "bpm_confidence", "key", "is_minor", "key_confidence",
-        "alternate_key", "duration", "sample_rate", "waveform_data",
+        "relative_key", "alternate_key", "duration", "sample_rate",
+        "waveform_data",
     ):
         assert key in result
 

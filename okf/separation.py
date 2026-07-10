@@ -1,27 +1,41 @@
 """
-Stem separation, two tiers:
+Stem separation, two tiers, both returning exactly two stems:
+"vocals" and "instrumental".
 
-- `separate_desktop()` — real Demucs (PyTorch), 4 true stems
-  (vocals/drums/bass/other). Desktop only (Windows/Linux/macOS): torch has
+- `separate_desktop()` — real Demucs (PyTorch) via the model API (vocals +
+  everything-else summed). Desktop only (Windows/Linux/macOS): torch has
   no Android build and no python-for-android recipe exists for it, so this
   path is unreachable on Android and is never imported by the Android UI
   branch. See okf/ALGORITHM_NOTES.md for why.
 - `separate_dsp()` — pure-NumPy fallback used on Android (and available on
-  desktop too, e.g. as a fast preview). Produces:
-    - "harmonic" / "percussive" via median-filtering HPSS
-    - "instrumental" / "vocals_estimate" via center-channel phase
-      cancellation (classic "karaoke" trick: content panned dead-center,
-      typically lead vocal, cancels out of L-R; instrumental survives)
+  desktop too, e.g. as a fast preview). Estimates "instrumental" /
+  "vocals" via center-channel phase cancellation (classic "karaoke"
+  trick: content panned dead-center, typically lead vocal, cancels out of
+  L-R; instrumental survives). Requires stereo input for that reason.
   This is NOT Demucs-quality and is labeled as such in the UI -- it's a
   real, working DSP technique, not a placeholder.
+
+The HPSS helpers (`_hpss`, `_median_filter_axis`, STFT/ISTFT) are kept:
+they're tested, dependency-free building blocks still useful for previews.
 """
 
+import json
 import os
+import threading
+import time
 import wave
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
-from okf.audio_analysis import load_wav
+from okf.audio_analysis import load_audio
+
+STEMS_INDEX_FILENAME = "stems_index.json"
+
+# save_stems_metadata does a read-modify-write of the whole index file;
+# without a lock, concurrent separations would silently drop each other's
+# entries (last writer wins).
+_INDEX_LOCK = threading.Lock()
 
 
 def is_torch_available():
@@ -35,8 +49,17 @@ def is_torch_available():
 
 def separate_desktop(filepath, out_dir, model_name="htdemucs"):
     """
-    Real 4-stem separation via Demucs. Desktop only.
+    Real vocals/instrumental separation via Demucs. Desktop only.
 
+    Calls the Demucs model API directly instead of the CLI: audio goes in
+    through our own `load_audio` and stems come out through our stdlib
+    WAV writer. That deliberately bypasses torchaudio's load/save, which
+    in recent versions delegates to the optional `torchcodec` package and
+    crashes when it's absent (the CLI hits exactly that after minutes of
+    separating). Vocals are one stem; every other model source is summed
+    into "instrumental".
+
+    On CPU, segments are processed on `num_workers` parallel threads.
     Requires `torch` + `demucs` (see requirements-desktop.txt). Raises
     RuntimeError with a clear message if they're missing rather than
     silently falling back, so the caller can decide whether to retry with
@@ -49,21 +72,43 @@ def separate_desktop(filepath, out_dir, model_name="htdemucs"):
             "separate_dsp() instead -- Demucs cannot run on-device there."
         )
 
-    from demucs.separate import main as demucs_main
+    import torch
+    from demucs.apply import apply_model
+    from demucs.pretrained import get_model
 
     os.makedirs(out_dir, exist_ok=True)
-    demucs_main([
-        "-n", model_name,
-        "-o", out_dir,
-        filepath,
-    ])
+    model = get_model(model_name)
+    model.eval()
 
-    stem_dir = os.path.join(out_dir, model_name, os.path.splitext(os.path.basename(filepath))[0])
+    y, sr = load_audio(filepath, target_sr=model.samplerate, mono=False)
+    if y.ndim == 1:
+        y = np.stack([y, y], axis=1)  # model expects stereo
+    wav = torch.from_numpy(np.ascontiguousarray(y.T.astype(np.float32)))  # (2, n)
+
+    # normalize like the demucs CLI does, undo on the way out
+    ref = wav.mean(0)
+    mean, std = float(ref.mean()), float(ref.std()) + 1e-8
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # cap CPU workers at 2: each parallel segment holds its own activations
+    # (~GBs for htdemucs), and 3+ workers can OOM-crash on a full-length song
+    n_jobs = 1 if device == "cuda" else min(2, max(1, (os.cpu_count() or 2) - 1))
+    with torch.no_grad():
+        sources = apply_model(
+            model, ((wav - mean) / std)[None],
+            device=device, num_workers=n_jobs,
+        )[0]
+    sources = sources * std + mean
+
+    vocals_idx = model.sources.index("vocals")
+    vocals = sources[vocals_idx]
+    instrumental = sources.sum(0) - vocals
+
+    base = os.path.splitext(os.path.basename(filepath))[0]
     stems = {}
-    for name in ("vocals", "drums", "bass", "other"):
-        path = os.path.join(stem_dir, f"{name}.wav")
-        if os.path.exists(path):
-            stems[name] = path
+    for name, tensor in (("vocals", vocals), ("instrumental", instrumental)):
+        path = os.path.join(out_dir, f"{base}_{name}.wav")
+        _write_wav(path, tensor.cpu().numpy().T, model.samplerate)
+        stems[name] = path
     return stems
 
 
@@ -134,55 +179,153 @@ def _stft_complex(y, n_fft=2048, hop_length=512):
 
 
 def _write_wav(path, y, sr):
+    """Write mono (n,) or stereo (n, 2) float [-1, 1] as 16-bit PCM WAV."""
     y = np.clip(y, -1.0, 1.0)
     pcm = (y * 32767.0).astype(np.int16)
+    n_channels = 1 if pcm.ndim == 1 else pcm.shape[1]
     with wave.open(path, "wb") as wf:
-        wf.setnchannels(1)
+        wf.setnchannels(n_channels)
         wf.setsampwidth(2)
         wf.setframerate(sr)
-        wf.writeframes(pcm.tobytes())
+        wf.writeframes(pcm.tobytes())  # row-major (n, ch) is already interleaved
 
 
-def separate_dsp(filepath, out_dir, n_fft=2048, hop_length=512):
+def separate_dsp(filepath, out_dir, target_sr=44100, progress=None):
     """
-    NumPy-only separation, works on Android and desktop alike.
+    NumPy-only vocals/instrumental separation, works on Android and
+    desktop alike. Returns paths to: vocals.wav, instrumental.wav.
 
-    Returns paths to: harmonic.wav, percussive.wav, instrumental.wav,
-    vocals_estimate.wav
+    Uses center-channel phase cancellation, which needs a stereo source:
+    a mono file has no L/R difference to exploit, so it raises ValueError
+    with a clear message instead of fabricating a result.
+
+    `progress`, if given, is called with a fraction in [0, 1] as each
+    stage completes (decode dominates the runtime). The two stem files
+    are written on parallel threads.
     """
+    def report(fraction):
+        if progress:
+            progress(fraction)
+
     os.makedirs(out_dir, exist_ok=True)
-    stems = {}
+    report(0.05)
 
-    y_stereo, sr = load_wav(filepath, target_sr=None, mono=False)
-    y_mono = y_stereo.mean(axis=1) if y_stereo.ndim > 1 else y_stereo
+    y_stereo, sr = load_audio(filepath, target_sr=target_sr, mono=False)
+    report(0.55)
+    if y_stereo.ndim < 2 or y_stereo.shape[1] < 2:
+        raise ValueError(
+            "Vocal separation (DSP mode) needs a stereo file: it isolates "
+            "vocals by cancelling the center channel between left and right, "
+            "and a mono file has no left/right difference to work with."
+        )
 
-    S_complex = _stft_complex(y_mono, n_fft, hop_length)
-    S_mag = np.abs(S_complex)
-    phase = S_complex / (S_mag + 1e-8)
-
-    harmonic_mag, percussive_mag = _hpss(S_mag)
-    harmonic_y = _istft(harmonic_mag * phase, hop_length, n_fft, length=len(y_mono))
-    percussive_y = _istft(percussive_mag * phase, hop_length, n_fft, length=len(y_mono))
+    left, right = y_stereo[:, 0], y_stereo[:, 1]
+    n = min(len(left), len(right))
+    if np.allclose(left[:n], right[:n], atol=1e-4):
+        # mono source upmixed to two identical channels (e.g. mono MP3 via
+        # ffmpeg -ac 2): L-R would cancel everything, not just the vocals
+        raise ValueError(
+            "Vocal separation (DSP mode) needs a true stereo file: this one "
+            "has identical left/right channels, so center-channel "
+            "cancellation would remove the whole mix, not just the vocals."
+        )
+    instrumental = left[:n] - right[:n]  # cancels center-panned content
+    vocals = (left[:n] + right[:n]) / 2.0 - instrumental * 0.5
+    report(0.7)
 
     base = os.path.splitext(os.path.basename(filepath))[0]
-    harmonic_path = os.path.join(out_dir, f"{base}_harmonic.wav")
-    percussive_path = os.path.join(out_dir, f"{base}_percussive.wav")
-    _write_wav(harmonic_path, harmonic_y, sr)
-    _write_wav(percussive_path, percussive_y, sr)
-    stems["harmonic"] = harmonic_path
-    stems["percussive"] = percussive_path
+    instrumental_path = os.path.join(out_dir, f"{base}_instrumental.wav")
+    vocals_path = os.path.join(out_dir, f"{base}_vocals.wav")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(_write_wav, instrumental_path, instrumental, sr),
+            pool.submit(_write_wav, vocals_path, vocals, sr),
+        ]
+        for f in futures:
+            f.result()  # re-raise any write error
+    report(1.0)
+    return {"vocals": vocals_path, "instrumental": instrumental_path}
 
-    if y_stereo.ndim > 1 and y_stereo.shape[1] >= 2:
-        left, right = y_stereo[:, 0], y_stereo[:, 1]
-        n = min(len(left), len(right))
-        instrumental = left[:n] - right[:n]  # cancels center-panned content
-        vocals_estimate = (left[:n] + right[:n]) / 2.0 - instrumental * 0.5
 
-        instrumental_path = os.path.join(out_dir, f"{base}_instrumental.wav")
-        vocals_path = os.path.join(out_dir, f"{base}_vocals_estimate.wav")
-        _write_wav(instrumental_path, instrumental, sr)
-        _write_wav(vocals_path, vocals_estimate, sr)
-        stems["instrumental"] = instrumental_path
-        stems["vocals_estimate"] = vocals_path
+# -- stems metadata index (JSON) ----------------------------------------------
+#
+# okf_output/stems_index.json maps each separated source file to its stem
+# paths plus how it was made. Lets the app hand back existing stems
+# instantly instead of re-separating, and survives restarts. Entries are
+# invalidated when the source file changes (size/mtime) or a stem file
+# was deleted.
 
-    return stems
+def _index_path(out_dir):
+    return os.path.join(out_dir, STEMS_INDEX_FILENAME)
+
+
+def _load_index(out_dir):
+    try:
+        with open(_index_path(out_dir), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _fingerprint(path):
+    st = os.stat(path)
+    return {"size": st.st_size, "mtime": st.st_mtime}
+
+
+def save_stems_metadata(out_dir, source_path, stems, mode, elapsed_seconds):
+    """Record a finished separation in the index; returns the entry."""
+    entry = {
+        "stems": stems,
+        "mode": mode,
+        "elapsed_seconds": round(elapsed_seconds, 2),
+        "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "source": _fingerprint(source_path),
+    }
+    with _INDEX_LOCK:
+        index = _load_index(out_dir)
+        index[os.path.abspath(source_path)] = entry
+        tmp = _index_path(out_dir) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(index, f, indent=2)
+        os.replace(tmp, _index_path(out_dir))
+    return entry
+
+
+def load_stems_metadata(out_dir, source_path):
+    """Return the index entry for source_path, or None if stale/absent."""
+    entry = _load_index(out_dir).get(os.path.abspath(source_path))
+    if not entry:
+        return None
+    try:
+        if _fingerprint(source_path) != entry.get("source"):
+            return None  # source file changed since separation
+    except OSError:
+        return None
+    if not all(os.path.exists(p) for p in entry.get("stems", {}).values()):
+        return None  # a stem file was deleted
+    return entry
+
+
+def separate_with_cache(filepath, out_dir, desktop_mode, progress=None):
+    """
+    Separation front door: reuse indexed stems when the source is
+    unchanged, otherwise separate, time it, and record the metadata.
+
+    Returns (stems, metadata_entry, from_cache).
+    """
+    cached = load_stems_metadata(out_dir, filepath)
+    if cached:
+        if progress:
+            progress(1.0)
+        return cached["stems"], cached, True
+
+    t0 = time.perf_counter()
+    if desktop_mode:
+        stems = separate_desktop(filepath, out_dir)
+    else:
+        stems = separate_dsp(filepath, out_dir, progress=progress)
+    elapsed = time.perf_counter() - t0
+
+    mode = "demucs" if desktop_mode else "dsp"
+    entry = save_stems_metadata(out_dir, filepath, stems, mode, elapsed)
+    return stems, entry, False

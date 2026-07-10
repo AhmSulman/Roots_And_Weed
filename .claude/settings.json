@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(python \"C:\\\\Users\\\\ahmed\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\f--Desktop-Roots-And-Weed\\\\3364974e-3ca2-4d7d-8042-bcf3c4c9b144\\\\scratchpad\\\\key_benchmark.py\")",
+      "PowerShell(python -c \"import kivymd; print\\(kivymd.__version__\\)\")",
+      "Read(//c/Users/ahmed/AppData/Local/Programs/Python/Python312/Lib/site-packages/kivymd/uix/progressbar/**)",
+      "PowerShell(python \"C:\\\\Users\\\\ahmed\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\f--Desktop-Roots-And-Weed\\\\3364974e-3ca2-4d7d-8042-bcf3c4c9b144\\\\scratchpad\\\\smoke_ui.py\" 2>&1)",
+      "PowerShell(git -C f:\\\\Desktop\\\\Roots_And_Weed status --short)",
+      "PowerShell(git -C f:\\\\Desktop\\\\Roots_And_Weed stash list)",
+      "PowerShell(python -c \"import torchaudio; print\\('torchaudio', torchaudio.__version__\\)\" 2>&1 | Select-Object -Last 1; \\(Invoke-WebRequest -Uri \"https://download.pytorch.org/whl/\" -UseBasicParsing\\).Links.href | Where-Object { $_ -match \"^cu\\\\d+\" } | Select-Object -Last 6)",
+      "PowerShell(pip install --dry-run --quiet torch==2.13.0 torchaudio --index-url https://download.pytorch.org/whl/cu132 2>&1)",
+      "PowerShell(pip install torch==2.13.0 torchaudio --index-url https://download.pytorch.org/whl/cu132 2>&1)",
+      "PowerShell(python -c \"import torch, torchaudio; print\\(torch.__version__, '| cuda:', torch.cuda.is_available\\(\\), '|', torchaudio.__version__\\)\")",
+      "PowerShell(pip install torch==2.13.0+cu132 torchaudio==2.11.0+cu132 --index-url https://download.pytorch.org/whl/cu132 2>&1)",
+      "PowerShell(pip index versions torchaudio --index-url https://download.pytorch.org/whl/cu132 2>&1)",
+      "PowerShell(pip index versions torchaudio --index-url https://download.pytorch.org/whl/cu130 2>&1)",
+      "PowerShell(pip index versions torchaudio --index-url https://download.pytorch.org/whl/cu126 2>&1)",
+      "PowerShell(python -m pytest tests/test_separation.py -v 2>&1)",
+      "PowerShell(pip install torch==2.13.0+cu130 torchaudio==2.11.0+cu130 --index-url https://download.pytorch.org/whl/cu130 2>&1)"
+    ]
+  }
+}

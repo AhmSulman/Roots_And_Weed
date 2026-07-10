@@ -1,5 +1,5 @@
 """
-OKF - Octave Key Finder
+Roots and Weed
 Cross-platform (Android + Windows) BPM / key finder and stem separator.
 Material Design UI via KivyMD.
 """
@@ -7,27 +7,49 @@ Material Design UI via KivyMD.
 import os
 import threading
 
+import kivy
 from kivy.clock import mainthread
+from kivy.core.text import LabelBase
 from kivy.graphics import Color, Line
-from kivy.properties import BooleanProperty, ListProperty, StringProperty
+from kivy.properties import (
+    BooleanProperty,
+    ListProperty,
+    NumericProperty,
+    StringProperty,
+)
 from kivy.uix.boxlayout import BoxLayout
 from kivy.utils import platform
 from kivymd.app import MDApp
-from kivymd.uix.bottomnavigation import MDBottomNavigation, MDBottomNavigationItem  # noqa: F401 (used by okf.kv)
-from kivymd.uix.boxlayout import MDBoxLayout  # noqa: F401 (used by okf.kv)
-from kivymd.uix.button import MDRaisedButton  # noqa: F401 (used by okf.kv)
-from kivymd.uix.card import MDCard  # noqa: F401 (used by okf.kv)
+from kivymd.uix.bottomnavigation import MDBottomNavigation, MDBottomNavigationItem  # noqa: F401 (used by rootsandweed.kv)
+from kivymd.uix.boxlayout import MDBoxLayout  # noqa: F401 (used by rootsandweed.kv)
+from kivymd.uix.button import MDRaisedButton  # noqa: F401 (used by rootsandweed.kv)
+from kivymd.uix.card import MDCard  # noqa: F401 (used by rootsandweed.kv)
 from kivymd.uix.filemanager import MDFileManager
-from kivymd.uix.label import MDLabel  # noqa: F401 (used by okf.kv)
-from kivymd.uix.toolbar import MDTopAppBar  # noqa: F401 (used by okf.kv)
+from kivymd.uix.label import MDLabel  # noqa: F401 (used by rootsandweed.kv)
+from kivymd.uix.progressbar import MDProgressBar  # noqa: F401 (used by rootsandweed.kv)
+from kivymd.uix.toolbar import MDTopAppBar  # noqa: F401 (used by rootsandweed.kv)
 
 from okf.audio_analysis import AudioAnalyzer
 from okf.mp3_convert import ConversionError, convert_mp3_to_wav
-from okf.separation import is_torch_available, separate_desktop, separate_dsp
+from okf.separation import is_torch_available, separate_with_cache
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(APP_DIR, "okf_output")
 CONVERTED_DIR = os.path.join(OUTPUT_DIR, "converted")
+
+# Two font families distinct from KivyMD's stock Roboto everywhere, both
+# already bundled inside Kivy itself (kivy/data/fonts) -- zero extra assets,
+# zero extra APK size, guaranteed present on Android too since it ships as
+# part of the core Kivy package.
+_KIVY_FONTS_DIR = os.path.join(os.path.dirname(kivy.__file__), "data", "fonts")
+LabelBase.register(
+    name="HeadingFont",
+    fn_regular=os.path.join(_KIVY_FONTS_DIR, "DejaVuSans.ttf"),
+)
+LabelBase.register(
+    name="ReadoutFont",
+    fn_regular=os.path.join(_KIVY_FONTS_DIR, "RobotoMono-Regular.ttf"),
+)
 
 
 def uses_desktop_separation():
@@ -42,7 +64,7 @@ class WaveformView(BoxLayout):
         if not self.waveform_data:
             return
         with self.canvas.after:
-            Color(0.40, 0.78, 1.0, 1)
+            Color(0.86, 0.24, 0.24, 1)  # muted red waveform trace
             w, h = self.width, self.height
             n = len(self.waveform_data)
             points = []
@@ -61,7 +83,7 @@ class WaveformView(BoxLayout):
 
 
 class RootWidget(BoxLayout):
-    status_text = StringProperty("Pick a WAV file to begin.")
+    status_text = StringProperty("Pick a WAV or MP3 file to begin.")
     bpm_text = StringProperty("--")
     key_text = StringProperty("--")
     confidence_text = StringProperty("")
@@ -69,9 +91,11 @@ class RootWidget(BoxLayout):
     waveform_data = ListProperty([])
     is_busy = BooleanProperty(False)
     current_filepath = StringProperty("")
+    separating = BooleanProperty(False)
+    separation_progress = NumericProperty(0)  # 0-100, drives the loading bar
 
     convert_status_text = StringProperty(
-        "The analyzer only reads WAV files. Pick an MP3 here to convert it first."
+        "Optional: convert an MP3 to a WAV file on disk. Analysis reads MP3 directly."
     )
     convert_source_name = StringProperty("")
     converted_wav_path = StringProperty("")
@@ -83,14 +107,14 @@ class RootWidget(BoxLayout):
         self.file_manager = MDFileManager(
             exit_manager=self.exit_file_manager,
             select_path=self.select_path,
-            ext=[".wav"],
+            ext=[".wav", ".mp3"],
         )
 
     # -- shared file manager, filtered per tab -----------------------------
 
     def open_wav_chooser(self):
         self._fm_mode = "wav"
-        self.file_manager.ext = [".wav"]
+        self.file_manager.ext = [".wav", ".mp3"]
         self.file_manager.show(os.path.expanduser("~"))
 
     def open_mp3_chooser(self):
@@ -173,8 +197,8 @@ class RootWidget(BoxLayout):
             return
 
         self.bpm_text = f"{result['bpm']:.1f}"
-        key_line = result["key"]
-        if result["key_confidence"] < 0.05:
+        key_line = f"{result['key']}  ·  rel. {result['relative_key']}"
+        if result["key_confidence"] < 0.05 and result["alternate_key"] != result["relative_key"]:
             key_line += f"  (or {result['alternate_key']}?)"
         self.key_text = key_line
         self.confidence_text = (
@@ -183,51 +207,80 @@ class RootWidget(BoxLayout):
         )
         self.waveform_data = result["waveform_data"]
         self.status_text = (
-            f"Done · {result['duration']:.1f}s · {result['sample_rate']} Hz"
+            f"Done in {result['analysis_seconds']:.2f}s · "
+            f"{result['duration']:.1f}s · {result['sample_rate']} Hz"
         )
 
     def run_separation(self):
         if self.is_busy or not self.current_filepath:
             return
         self.is_busy = True
+        self.separating = True
+        self.separation_progress = 0
         desktop_mode = uses_desktop_separation()
         self.separation_mode_text = (
-            "Demucs (desktop, 4 stems)" if desktop_mode else "DSP fallback (Android-safe)"
+            "Demucs (desktop, vocals + instrumental)"
+            if desktop_mode
+            else "DSP fallback (vocals + instrumental, Android-safe)"
         )
+        bar = self.ids.sep_progress
+        if desktop_mode:
+            # Demucs exposes no progress hook: animate instead of guessing
+            bar.type = "indeterminate"
+            bar.start()
+        else:
+            bar.type = None  # determinate: value driven by real DSP stages
         self.status_text = "Separating stems... this can take a while."
         threading.Thread(
             target=self._separate_thread, args=(self.current_filepath, desktop_mode), daemon=True
         ).start()
 
+    @mainthread
+    def _set_separation_progress(self, fraction):
+        self.separation_progress = fraction * 100.0
+
     def _separate_thread(self, filepath, desktop_mode):
         try:
-            os.makedirs(OUTPUT_DIR, exist_ok=True)
-            if desktop_mode:
-                stems = separate_desktop(filepath, OUTPUT_DIR)
-            else:
-                stems = separate_dsp(filepath, OUTPUT_DIR)
-            self._on_separation_done(stems, None)
+            stems, meta, from_cache = separate_with_cache(
+                filepath, OUTPUT_DIR, desktop_mode,
+                progress=self._set_separation_progress,
+            )
+            self._on_separation_done(stems, None, meta, from_cache)
         except Exception as e:
-            self._on_separation_done(None, str(e))
+            self._on_separation_done(None, str(e), None, False)
 
     @mainthread
-    def _on_separation_done(self, stems, error):
+    def _on_separation_done(self, stems, error, meta, from_cache):
         self.is_busy = False
+        self.separating = False
+        bar = self.ids.sep_progress
+        if bar.type == "indeterminate":
+            bar.stop()
         if error:
+            self.separation_progress = 0
             self.status_text = f"Separation error: {error}"
             return
+        self.separation_progress = 100
         names = ", ".join(stems.keys())
-        self.status_text = f"Stems ready in {OUTPUT_DIR}: {names}"
+        took = meta["elapsed_seconds"]
+        if from_cache:
+            self.status_text = (
+                f"Stems retrieved from cache (originally {took:.1f}s): {names}"
+            )
+        else:
+            self.status_text = f"Stems ready in {took:.1f}s ({OUTPUT_DIR}): {names}"
 
 
-class OKFApp(MDApp):
+class RootsAndWeedApp(MDApp):
     def build(self):
-        self.title = "OKF - Octave Key Finder"
+        self.title = "Roots and Weed"
         self.theme_cls.theme_style = "Dark"
-        self.theme_cls.primary_palette = "Teal"
-        self.theme_cls.accent_palette = "Amber"
+        self.theme_cls.primary_palette = "Red"
+        self.theme_cls.primary_hue = "700"  # deep, muted red rather than neon
+        self.theme_cls.accent_palette = "DeepOrange"
+        self.theme_cls.accent_hue = "700"
         return RootWidget()
 
 
 if __name__ == "__main__":
-    OKFApp().run()
+    RootsAndWeedApp().run()

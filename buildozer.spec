@@ -1,6 +1,6 @@
 [app]
-title = OKF - Octave Key Finder
-package.name = okf
+title = Roots and Weed
+package.name = rootsandweed
 package.domain = org.okf
 
 source.dir = .
