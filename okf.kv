@@ -18,100 +18,180 @@
         elevation: 4
         left_action_items: [["waveform", lambda x: None]]
 
-    MDBoxLayout:
-        orientation: "vertical"
-        padding: "20dp"
-        spacing: "16dp"
+    MDBottomNavigation:
+        id: bottom_nav
+        panel_color: app.theme_cls.bg_dark
+        text_color_normal: 0.6, 0.6, 0.65, 1
+        text_color_active: app.theme_cls.accent_color
 
-        MDCard:
-            id: waveform_card
-            orientation: "vertical"
-            padding: "8dp"
-            radius: [12]
-            size_hint_y: 0.35
-            elevation: 1
+        MDBottomNavigationItem:
+            name: "analyze"
+            text: "Analyze"
+            icon: "waveform"
 
-            WaveformView:
-                id: waveform
-                waveform_data: root.waveform_data
-
-        MDBoxLayout:
-            orientation: "horizontal"
-            size_hint_y: None
-            height: "120dp"
-            spacing: "16dp"
-
-            MDCard:
+            MDBoxLayout:
                 orientation: "vertical"
-                padding: "16dp"
-                radius: [12]
-                elevation: 1
+                padding: "20dp"
+                spacing: "16dp"
+
+                MDCard:
+                    id: waveform_card
+                    orientation: "vertical"
+                    padding: "8dp"
+                    radius: [12]
+                    size_hint_y: 0.35
+                    elevation: 1
+
+                    WaveformView:
+                        id: waveform
+                        waveform_data: root.waveform_data
+
+                MDBoxLayout:
+                    orientation: "horizontal"
+                    size_hint_y: None
+                    height: "120dp"
+                    spacing: "16dp"
+
+                    MDCard:
+                        orientation: "vertical"
+                        padding: "16dp"
+                        radius: [12]
+                        elevation: 1
+
+                        MDLabel:
+                            text: "BPM"
+                            theme_text_color: "Secondary"
+                            font_style: "Caption"
+                            size_hint_y: None
+                            height: "18dp"
+
+                        MDLabel:
+                            text: root.bpm_text
+                            font_style: "H4"
+                            bold: True
+
+                    MDCard:
+                        orientation: "vertical"
+                        padding: "16dp"
+                        radius: [12]
+                        elevation: 1
+
+                        MDLabel:
+                            text: "Key"
+                            theme_text_color: "Secondary"
+                            font_style: "Caption"
+                            size_hint_y: None
+                            height: "18dp"
+
+                        MDLabel:
+                            text: root.key_text
+                            font_style: "H4"
+                            bold: True
 
                 MDLabel:
-                    text: "BPM"
+                    text: root.confidence_text
+                    theme_text_color: "Secondary"
+                    font_style: "Caption"
+                    size_hint_y: None
+                    height: "20dp"
+
+                MDBoxLayout:
+                    orientation: "horizontal"
+                    size_hint_y: None
+                    height: "48dp"
+                    spacing: "16dp"
+
+                    MDRaisedButton:
+                        text: "Open WAV file"
+                        on_release: root.open_wav_chooser()
+                        disabled: root.is_busy
+                        size_hint_x: 1
+
+                    MDRaisedButton:
+                        text: "Separate stems"
+                        on_release: root.run_separation()
+                        disabled: root.is_busy or not root.current_filepath
+                        md_bg_color: app.theme_cls.accent_color
+                        size_hint_x: 1
+
+                MDLabel:
+                    text: root.separation_mode_text
                     theme_text_color: "Secondary"
                     font_style: "Caption"
                     size_hint_y: None
                     height: "18dp"
 
                 MDLabel:
-                    text: root.bpm_text
-                    font_style: "H4"
-                    bold: True
-
-            MDCard:
-                orientation: "vertical"
-                padding: "16dp"
-                radius: [12]
-                elevation: 1
-
-                MDLabel:
-                    text: "Key"
-                    theme_text_color: "Secondary"
-                    font_style: "Caption"
+                    text: root.status_text
+                    font_style: "Body1"
                     size_hint_y: None
-                    height: "18dp"
+                    height: "56dp"
+
+        MDBottomNavigationItem:
+            name: "convert"
+            text: "Convert"
+            icon: "file-music"
+
+            MDBoxLayout:
+                orientation: "vertical"
+                padding: "24dp"
+                spacing: "20dp"
 
                 MDLabel:
-                    text: root.key_text
-                    font_style: "H4"
+                    text: "MP3 -> WAV converter"
+                    font_style: "H5"
                     bold: True
+                    size_hint_y: None
+                    height: "36dp"
 
-        MDLabel:
-            text: root.confidence_text
-            theme_text_color: "Secondary"
-            font_style: "Caption"
-            size_hint_y: None
-            height: "20dp"
+                MDLabel:
+                    text: "OKF's analyzer only reads WAV (that keeps the Android build dependency-free — see okf/ALGORITHM_NOTES.md). Pick an MP3 below to convert it first."
+                    theme_text_color: "Secondary"
+                    font_style: "Body2"
+                    size_hint_y: None
+                    height: "72dp"
+                    text_size: self.width, None
 
-        MDBoxLayout:
-            orientation: "horizontal"
-            size_hint_y: None
-            height: "48dp"
-            spacing: "16dp"
+                MDCard:
+                    orientation: "vertical"
+                    padding: "16dp"
+                    spacing: "12dp"
+                    radius: [12]
+                    elevation: 1
+                    size_hint_y: None
+                    height: "160dp"
 
-            MDRaisedButton:
-                text: "Open WAV file"
-                on_release: root.open_filechooser()
-                disabled: root.is_busy
-                size_hint_x: 1
+                    MDLabel:
+                        text: root.convert_source_name if root.convert_source_name else "No MP3 selected"
+                        font_style: "Subtitle1"
 
-            MDRaisedButton:
-                text: "Separate stems"
-                on_release: root.run_separation()
-                disabled: root.is_busy or not root.current_filepath
-                md_bg_color: app.theme_cls.accent_color
-                size_hint_x: 1
+                    MDLabel:
+                        text: root.convert_status_text
+                        theme_text_color: "Secondary"
+                        font_style: "Body2"
+                        text_size: self.width, None
 
-        MDLabel:
-            text: root.separation_mode_text
-            theme_text_color: "Secondary"
-            font_style: "Caption"
-            size_hint_y: None
-            height: "18dp"
+                    MDBoxLayout:
+                        orientation: "horizontal"
+                        size_hint_y: None
+                        height: "48dp"
+                        spacing: "12dp"
 
-        MDLabel:
-            text: root.status_text
-            font_style: "Body1"
-            size_hint_y: None
-            height: "56dp"
+                        MDRaisedButton:
+                            text: "Choose MP3"
+                            on_release: root.open_mp3_chooser()
+                            disabled: root.convert_busy
+                            size_hint_x: 1
+
+                        MDRaisedButton:
+                            text: "Convert"
+                            on_release: root.run_conversion()
+                            disabled: root.convert_busy or not root.convert_source_name or root.converted_wav_path
+                            md_bg_color: app.theme_cls.accent_color
+                            size_hint_x: 1
+
+                MDRaisedButton:
+                    text: "Use in Analyzer"
+                    on_release: root.use_converted_in_analyzer()
+                    disabled: not root.converted_wav_path
+                    pos_hint: {"center_x": 0.5}

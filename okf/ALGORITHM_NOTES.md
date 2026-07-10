@@ -68,10 +68,12 @@ Major") instead of asserting false certainty.
 **4. WAV-only input, on purpose.**
 Dropping `audioread`/`soundfile` means MP3/FLAC/etc. aren't decoded
 in-process anymore. Rather than pull in a heavier decode path (which reopens
-the Android build-fragility problem), the app expects WAV in, and can
-pre-convert other formats via `ffmpeg` on desktop where that's cheap and
-reliable. On Android the practical source of audio is usually a recording or
-an already-WAV/PCM asset anyway.
+the Android build-fragility problem), the analyzer expects WAV in, and the
+app's **Convert** tab (`okf/mp3_convert.py`) handles turning MP3 into WAV
+before analysis: a system `ffmpeg` subprocess on desktop, and Android's own
+`MediaExtractor`/`MediaCodec` (via pyjnius) on-device — the same hardware/
+software MP3 decoder every phone already ships with, so no ffmpeg binary or
+extra native dependency has to travel inside the APK.
 
 ## What's intentionally *not* claimed to be equivalent
 

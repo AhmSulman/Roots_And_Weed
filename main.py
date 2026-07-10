@@ -13,6 +13,7 @@ from kivy.properties import BooleanProperty, ListProperty, StringProperty
 from kivy.uix.boxlayout import BoxLayout
 from kivy.utils import platform
 from kivymd.app import MDApp
+from kivymd.uix.bottomnavigation import MDBottomNavigation, MDBottomNavigationItem  # noqa: F401 (used by okf.kv)
 from kivymd.uix.boxlayout import MDBoxLayout  # noqa: F401 (used by okf.kv)
 from kivymd.uix.button import MDRaisedButton  # noqa: F401 (used by okf.kv)
 from kivymd.uix.card import MDCard  # noqa: F401 (used by okf.kv)
@@ -21,10 +22,12 @@ from kivymd.uix.label import MDLabel  # noqa: F401 (used by okf.kv)
 from kivymd.uix.toolbar import MDTopAppBar  # noqa: F401 (used by okf.kv)
 
 from okf.audio_analysis import AudioAnalyzer
+from okf.mp3_convert import ConversionError, convert_mp3_to_wav
 from okf.separation import is_torch_available, separate_desktop, separate_dsp
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(APP_DIR, "okf_output")
+CONVERTED_DIR = os.path.join(OUTPUT_DIR, "converted")
 
 
 def uses_desktop_separation():
@@ -67,25 +70,86 @@ class RootWidget(BoxLayout):
     is_busy = BooleanProperty(False)
     current_filepath = StringProperty("")
 
+    convert_status_text = StringProperty(
+        "The analyzer only reads WAV files. Pick an MP3 here to convert it first."
+    )
+    convert_source_name = StringProperty("")
+    converted_wav_path = StringProperty("")
+    convert_busy = BooleanProperty(False)
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self._fm_mode = "wav"
         self.file_manager = MDFileManager(
             exit_manager=self.exit_file_manager,
             select_path=self.select_path,
             ext=[".wav"],
         )
 
-    def open_filechooser(self):
-        start_path = os.path.expanduser("~")
-        self.file_manager.show(start_path)
+    # -- shared file manager, filtered per tab -----------------------------
+
+    def open_wav_chooser(self):
+        self._fm_mode = "wav"
+        self.file_manager.ext = [".wav"]
+        self.file_manager.show(os.path.expanduser("~"))
+
+    def open_mp3_chooser(self):
+        self._fm_mode = "mp3"
+        self.file_manager.ext = [".mp3"]
+        self.file_manager.show(os.path.expanduser("~"))
 
     def exit_file_manager(self, *args):
         self.file_manager.close()
 
     def select_path(self, path):
         self.exit_file_manager()
-        self.current_filepath = path
-        self.run_analysis(path)
+        if self._fm_mode == "mp3":
+            self.convert_source_name = os.path.basename(path)
+            self.convert_status_text = f"Selected {self.convert_source_name}. Ready to convert."
+            self._mp3_source_path = path
+            self.converted_wav_path = ""
+        else:
+            self.current_filepath = path
+            self.run_analysis(path)
+
+    # -- MP3 -> WAV conversion tab -----------------------------------------
+
+    def run_conversion(self):
+        source = getattr(self, "_mp3_source_path", "")
+        if self.convert_busy or not source:
+            return
+        self.convert_busy = True
+        self.convert_status_text = f"Converting {os.path.basename(source)}..."
+        threading.Thread(target=self._convert_thread, args=(source,), daemon=True).start()
+
+    def _convert_thread(self, source):
+        try:
+            os.makedirs(CONVERTED_DIR, exist_ok=True)
+            base = os.path.splitext(os.path.basename(source))[0]
+            out_path = os.path.join(CONVERTED_DIR, f"{base}.wav")
+            convert_mp3_to_wav(source, out_path)
+            self._on_conversion_done(out_path, None)
+        except ConversionError as e:
+            self._on_conversion_done(None, str(e))
+        except Exception as e:
+            self._on_conversion_done(None, f"Unexpected error: {e}")
+
+    @mainthread
+    def _on_conversion_done(self, out_path, error):
+        self.convert_busy = False
+        if error:
+            self.convert_status_text = f"Conversion failed: {error}"
+            return
+        self.converted_wav_path = out_path
+        self.convert_status_text = f"Converted -> {os.path.basename(out_path)}. Ready to analyze."
+
+    def use_converted_in_analyzer(self):
+        if not self.converted_wav_path:
+            return
+        self.current_filepath = self.converted_wav_path
+        if "bottom_nav" in self.ids:
+            self.ids.bottom_nav.switch_tab("analyze")
+        self.run_analysis(self.converted_wav_path)
 
     def run_analysis(self, filepath):
         if self.is_busy:

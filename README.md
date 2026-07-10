@@ -7,6 +7,10 @@ generalized into a standalone mobile/desktop app.
 
 ## What it does
 
+- **Convert tab**: turns an MP3 into a WAV first (the analyzer only reads
+  WAV — see below). Desktop shells out to a system `ffmpeg`; Android decodes
+  MP3 on-device via `MediaExtractor`/`MediaCodec` (the codec every phone
+  already ships with — no ffmpeg binary needed in the APK).
 - Detects a song's **BPM** (tempo) and **musical key** from a WAV file, with
   confidence scores and the runner-up key shown when the pick is ambiguous
   (see `okf/ALGORITHM_NOTES.md` for the full reasoning).
@@ -26,6 +30,7 @@ okf.kv                   # Material Design layout
 okf/
   audio_analysis.py       # BPM + key detection (pure NumPy, no librosa)
   separation.py            # Demucs (desktop) + DSP fallback (Android-safe)
+  mp3_convert.py            # MP3 -> WAV (ffmpeg on desktop, MediaCodec on Android)
   ALGORITHM_NOTES.md        # Why it's built this way, and what changed vs. the original
 buildozer.spec            # Android build config (python-for-android)
 requirements-desktop.txt  # Windows/Linux/macOS deps (adds torch + demucs)
@@ -66,9 +71,10 @@ separation on Windows, run PyInstaller locally after
 
 ## Known limitations
 
-- Only WAV input is decoded in-process (stdlib `wave`, zero extra
-  dependencies — the safest choice for Android). Convert other formats with
-  `ffmpeg` first on desktop.
+- Only WAV input is decoded by the analyzer itself (stdlib `wave`, zero
+  extra dependencies — the safest choice for Android). Use the in-app
+  **Convert** tab (or `ffmpeg` directly on desktop) to turn MP3 into WAV
+  first.
 - Android stem separation is DSP-based, not neural — see
   `okf/ALGORITHM_NOTES.md` for why, and what it actually does.
 - Tempo/key detection is a best-effort estimate on any audio-only algorithm;
