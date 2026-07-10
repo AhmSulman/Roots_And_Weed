@@ -11,16 +11,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build APK with buildozer
-        uses: ArtemSBulgakov/buildozer-action@v1
-        id: buildozer
-        with:
-          command: buildozer android debug
-          buildozer_version: stable
+      # Run the official Kivy buildozer image directly instead of a
+      # third-party wrapper action: the ArtemSBulgakov/buildozer-action image
+      # layers on an `add-apt-repository ppa:openjdk-r/ppa` step that 404s
+      # (an abandoned Launchpad PPA, unrelated to this repo). The official
+      # image already ships a working JDK, so we skip that layer entirely.
+      - name: Build APK with buildozer (official Kivy Docker image)
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}":/home/user/hostcwd \
+            ghcr.io/kivy/buildozer:latest \
+            android debug
+
+      - name: Locate built APK
+        id: find_apk
+        run: |
+          apk_path=$(find bin -name "*.apk" | head -n 1)
+          echo "apk_path=$apk_path" >> "$GITHUB_OUTPUT"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: okf-debug-apk
-          path: ${{ steps.buildozer.outputs.filename }}
+          path: ${{ steps.find_apk.outputs.apk_path }}
           retention-days: 30
