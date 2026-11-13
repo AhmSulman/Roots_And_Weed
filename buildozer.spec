@@ -27,6 +27,10 @@ android.ndk_api = 24
 android.archs = arm64-v8a,armeabi-v7a
 android.allow_backup = True
 
+# CI runs non-interactively: auto-accept the Android SDK license, otherwise
+# sdkmanager skips build-tools and the build dies with "Aidl not found".
+android.accept_sdk_license = True
+
 p4a.branch = master
 
 [buildozer]

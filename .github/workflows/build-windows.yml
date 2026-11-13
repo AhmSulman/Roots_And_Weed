@@ -8,6 +8,15 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      # PyInstaller's analysis imports Kivy/KivyMD, which opens a window. The
+      # runner only has the GDI OpenGL 1.1 driver, so Kivy pops a blocking
+      # "OpenGL 2.0 not found" message box and the job hangs until the 6h
+      # limit. ANGLE (bundled with Kivy on Windows) provides GLES via D3D.
+      KIVY_GL_BACKEND: angle_sdl2
+      KIVY_NO_ARGS: "1"
+      KIVY_NO_CONSOLELOG: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -18,7 +27,7 @@ jobs:
       - name: Install desktop requirements (Kivy/KivyMD/NumPy only)
         run: |
           python -m pip install --upgrade pip
-          pip install kivy>=2.3.0 kivymd>=1.2.0 numpy pyinstaller
+          pip install "kivy>=2.3.0" "kivymd>=1.2.0" numpy pyinstaller
         # NOTE: torch/demucs are intentionally not installed here to keep CI
         # fast/reliable. Real Demucs separation still works when a user runs
         # `pip install -r requirements-desktop.txt` locally; the CI-built exe
