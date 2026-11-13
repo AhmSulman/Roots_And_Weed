@@ -13,10 +13,10 @@ version = 0.1.0
 # build of PyTorch and no python-for-android recipe for it. Stem separation
 # on-device uses the pure-NumPy DSP fallback in okf/separation.py instead.
 # See okf/ALGORITHM_NOTES.md.
-# Python is pinned: p4a master now defaults to Python 3.14, and Kivy 2.3.0's
+# Python is pinned: p4a master now defaults to Python 3.14, and Kivy 2.3.x's
 # generated C fails to compile against the 3.13+ C API
 # (_PyLong_AsByteArray signature change, removed _PyDict_* internals).
-requirements = python3==3.11.9,hostpython3==3.11.9,kivy==2.3.0,kivymd==1.2.0,numpy,pillow
+requirements = python3==3.11.9,hostpython3==3.11.9,kivy==2.3.1,kivymd==1.2.0,numpy,pillow
 
 orientation = portrait
 fullscreen = 0
